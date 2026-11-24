@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramConflictError, TelegramRetryAfter
 from aiogram.fsm.storage.memory import MemoryStorage
 from config import load_config
 from database import Database
@@ -40,19 +40,33 @@ async def main() -> None:
     dp.include_router(user_router)
 
     try:
-        # Проверяем, установлен ли вебхук; если нет — не вызываем delete_webhook, чтобы не ловить Flood Control
-        webhook_info = await bot.get_webhook_info()
-        if webhook_info.url:
+        while True:
             try:
-                await bot.delete_webhook(drop_pending_updates=True)
-            except TelegramAPIError as e:
-                logging.warning("Не удалось удалить вебхук (%s), запускаем polling напрямую.", e)
-
-        logging.info("Бот городского новостного канала успешно запущен (БД: %s).", config.db_path)
-        await dp.start_polling(
-            bot,
-            allowed_updates=dp.resolve_used_update_types(),
-        )
+                logging.info(
+                    "Запуск polling бота городского новостного канала (БД: %s)...",
+                    config.db_path,
+                )
+                await dp.start_polling(
+                    bot,
+                    allowed_updates=dp.resolve_used_update_types(),
+                )
+                break
+            except TelegramRetryAfter as e:
+                wait_sec = int(e.retry_after) + 1
+                logging.warning(
+                    "Telegram Flood Control при старте. Ждём %s сек. без перезапуска...",
+                    wait_sec,
+                )
+                await asyncio.sleep(wait_sec)
+            except TelegramConflictError:
+                logging.warning(
+                    "Обнаружен активный webhook или второй экземпляр бота. Сбрасываем webhook..."
+                )
+                try:
+                    await bot.delete_webhook(drop_pending_updates=True)
+                except TelegramRetryAfter as e:
+                    await asyncio.sleep(int(e.retry_after) + 1)
+                await asyncio.sleep(2)
     finally:
         await bot.session.close()
 
