@@ -93,9 +93,7 @@ async def publish_news_to_channel(
             author_str = html.escape(ticket.get("full_name") or "Подписчик")
         post_parts.append(f"<i>Предложил(а): {author_str}</i>")
 
-    caption_text = "
-
-".join(post_parts)
+    caption_text = "\n\n".join(post_parts)
 
     if not media:
         await bot.send_message(chat_id=channel_id, text=caption_text)
@@ -164,10 +162,7 @@ async def mark_card_resolved(callback: CallbackQuery, status_line: str) -> None:
     base_html = callback.message.html_text or ""
     try:
         await callback.message.edit_text(
-            f"{base_html}
-
-━━━━━━━━━━━━━━
-{status_line}",
+            f"{base_html}\n\n━━━━━━━━━━━━━━\n{status_line}",
             reply_markup=None,
         )
     except TelegramBadRequest:
@@ -199,10 +194,8 @@ async def cb_admin_publish_news(
         await bot.send_message(
             chat_id=feedback_chat,
             text=(
-                f"❌ Не удалось опубликовать новость #{ticket_id} в канал <code>{config.channel_id}</code>.
-"
-                f"Проверьте, что бот добавлен в канал администратором с правом публикации постов.
-"
+                f"❌ Не удалось опубликовать новость #{ticket_id} в канал <code>{config.channel_id}</code>.\n"
+                f"Проверьте, что бот добавлен в канал администратором с правом публикации постов.\n"
                 f"Детали: <code>{html.escape(str(e))}</code>"
             ),
         )
@@ -212,16 +205,14 @@ async def cb_admin_publish_news(
 
     channel_link_hint = ""
     if isinstance(config.channel_id, str) and config.channel_id.startswith("@"):
-        channel_link_hint = f"
-👉 Посмотреть пост: {html.escape(config.channel_id)}"
+        channel_link_hint = f"\n👉 Посмотреть пост: {html.escape(config.channel_id)}"
 
     await safe_notify_user(
         bot=bot,
         feedback_chat_id=feedback_chat,
         user_id=ticket["user_id"],
         text=(
-            f"🎉 <b>Ваша новость #{ticket_id} опубликована в канале!</b>
-"
+            f"🎉 <b>Ваша новость #{ticket_id} опубликована в канале!</b>\n"
             f"Спасибо за участие в жизни города!{channel_link_hint}"
         ),
     )
@@ -249,8 +240,7 @@ async def cb_admin_start_reply(
 
     if callback.message:
         prompt_msg = await callback.message.answer(
-            f"💬 Введите ответ пользователю по обращению <b>#{ticket_id}</b>
-"
+            f"💬 Введите ответ пользователю по обращению <b>#{ticket_id}</b>\n"
             "(можно отправить текст, фото или файл):",
             reply_markup=admin_cancel_fsm_kb(),
         )
@@ -290,9 +280,7 @@ async def process_admin_reply_text(
 
     safe_reply = html.escape(text) if text else "<i>(администратор отправил вложение)</i>"
     user_notice = (
-        f"💬 <b>Ответ по обращению #{ticket_id}:</b>
-
-"
+        f"💬 <b>Ответ по обращению #{ticket_id}:</b>\n\n"
         f"{safe_reply}"
     )
 
@@ -374,16 +362,14 @@ async def cb_admin_reject_fast(
         feedback_chat_id=feedback_chat,
         user_id=ticket["user_id"],
         text=(
-            f"❌ <b>Ваше обращение #{ticket_id} отклонено.</b>
-"
+            f"❌ <b>Ваше обращение #{ticket_id} отклонено.</b>\n"
             f"<b>Причина:</b> {html.escape(reason)}"
         ),
     )
 
     admin_name = html.escape(callback.from_user.full_name) if callback.from_user else "Админ"
     await mark_card_resolved(
-        callback, f"❌ <b>Отклонено</b> ({admin_name})
-Причина: {html.escape(reason)}"
+        callback, f"❌ <b>Отклонено</b> ({admin_name})\nПричина: {html.escape(reason)}"
     )
     await callback.answer("Отклонено")
 
@@ -447,8 +433,7 @@ async def process_admin_custom_reject(
         feedback_chat_id=message.chat.id,
         user_id=ticket["user_id"],
         text=(
-            f"❌ <b>Ваше обращение #{ticket_id} отклонено.</b>
-"
+            f"❌ <b>Ваше обращение #{ticket_id} отклонено.</b>\n"
             f"<b>Причина:</b> {html.escape(reason)}"
         ),
     )
@@ -460,12 +445,8 @@ async def process_admin_custom_reject(
                 chat_id=card_chat_id,
                 message_id=card_message_id,
                 text=(
-                    f"{card_html}
-
-━━━━━━━━━━━━━━
-"
-                    f"❌ <b>Отклонено</b> ({admin_name})
-Причина: {html.escape(reason)}"
+                    f"{card_html}\n\n━━━━━━━━━━━━━━\n"
+                    f"❌ <b>Отклонено</b> ({admin_name})\nПричина: {html.escape(reason)}"
                 ),
                 reply_markup=None,
             )
@@ -494,8 +475,7 @@ async def cb_admin_close_ticket(
         bot=bot,
         feedback_chat_id=feedback_chat,
         user_id=ticket["user_id"],
-        text=f"🔒 <b>Обращение #{ticket_id} закрыто администратором.</b>
-Если появятся новые вопросы, используйте /start.",
+        text=f"🔒 <b>Обращение #{ticket_id} закрыто администратором.</b>\nЕсли появятся новые вопросы, используйте /start.",
     )
 
     admin_name = html.escape(callback.from_user.full_name) if callback.from_user else "Админ"
@@ -521,8 +501,7 @@ async def cb_admin_ban_user(
     if is_demo_sandbox:
         await mark_card_resolved(
             callback,
-            f"🚫 <b>[ДЕМО] Пользователь</b> <code>{target_user_id}</code> <b>заблокирован</b>
-"
+            f"🚫 <b>[ДЕМО] Пользователь</b> <code>{target_user_id}</code> <b>заблокирован</b>\n"
             "<i>(В демо-режиме ваш аккаунт не блокируется, чтобы вы могли продолжить тест)</i>",
         )
         await callback.answer(
