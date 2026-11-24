@@ -1,4 +1,4 @@
-# keyboards.py — inline-клавиатуры для пользовательских сценариев и админ-панели
+# keyboards.py — inline-клавиатуры для пользовательских сценариев, демо-песочницы и админ-панели
 
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -17,7 +17,7 @@ TICKET_REJECT_REASONS: dict[str, str] = {
 }
 
 
-def main_menu_kb() -> InlineKeyboardMarkup:
+def main_menu_kb(demo_mode: bool = True) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="📰 Предложить новость", callback_data="menu:news")
@@ -27,6 +27,14 @@ def main_menu_kb() -> InlineKeyboardMarkup:
     )
     builder.row(
         InlineKeyboardButton(text="📢 Купить рекламу", callback_data="menu:ads")
+    )
+    demo_label = (
+        "🛠 Режим админа (Демо): ВКЛ ✅"
+        if demo_mode
+        else "🛠 Режим админа (Демо): ВЫКЛ ❌"
+    )
+    builder.row(
+        InlineKeyboardButton(text=demo_label, callback_data="demo:toggle")
     )
     return builder.as_markup()
 

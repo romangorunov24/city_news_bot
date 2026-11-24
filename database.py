@@ -1,6 +1,7 @@
-# database.py — асинхронный слой работы с SQLite (aiosqlite): таблицы users и tickets
+# database.py — асинхронный слой работы с SQLite (aiosqlite): таблицы users и tickets + настройки демо-режима
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
 import aiosqlite
@@ -9,6 +10,9 @@ import aiosqlite
 class Database:
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
+        parent = os.path.dirname(os.path.abspath(db_path))
+        if parent:
+            os.makedirs(parent, exist_ok=True)
 
     async def init_db(self) -> None:
         async with aiosqlite.connect(self.db_path) as db:
@@ -19,10 +23,19 @@ class Database:
                     username TEXT,
                     full_name TEXT NOT NULL,
                     is_banned INTEGER NOT NULL DEFAULT 0,
+                    demo_mode INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL
                 )
                 """
             )
+            # Мягкая миграция на случай, если база уже была создана без колонки demo_mode
+            try:
+                await db.execute(
+                    "ALTER TABLE users ADD COLUMN demo_mode INTEGER NOT NULL DEFAULT 1"
+                )
+            except aiosqlite.OperationalError:
+                pass
+
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS tickets (
@@ -45,13 +58,29 @@ class Database:
         async with aiosqlite.connect(self.db_path) as db:
             await db.execute(
                 """
-                INSERT INTO users (user_id, username, full_name, is_banned, created_at)
-                VALUES (?, ?, ?, 0, ?)
+                INSERT INTO users (user_id, username, full_name, is_banned, demo_mode, created_at)
+                VALUES (?, ?, ?, 0, 1, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     username = excluded.username,
                     full_name = excluded.full_name
                 """,
                 (user_id, username, full_name, now),
+            )
+            await db.commit()
+
+    async def get_demo_mode(self, user_id: int) -> bool:
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                "SELECT demo_mode FROM users WHERE user_id = ?", (user_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return bool(row[0]) if row else True
+
+    async def set_demo_mode(self, user_id: int, enabled: bool) -> None:
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE users SET demo_mode = ? WHERE user_id = ?",
+                (int(enabled), user_id),
             )
             await db.commit()
 
