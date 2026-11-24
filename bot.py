@@ -5,6 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramRetryAfter
 from aiogram.fsm.storage.memory import MemoryStorage
 from config import load_config
 from database import Database
@@ -41,9 +42,24 @@ async def main() -> None:
     dp.include_router(admin_router)
     dp.include_router(user_router)
 
-    await bot.delete_webhook(drop_pending_updates=True)
-    logging.info("Бот городского новостного канала успешно запущен.")
-    await dp.start_polling(bot)
+    try:
+        # Безопасный сброс вебхука без падения контейнера при флуд-контроле Telegram
+        while True:
+            try:
+                await bot.delete_webhook(drop_pending_updates=True)
+                break
+            except TelegramRetryAfter as e:
+                wait_sec = int(e.retry_after) + 1
+                logging.warning(
+                    "Telegram Flood Control на delete_webhook. Ждём %s сек. без перезапуска...",
+                    wait_sec,
+                )
+                await asyncio.sleep(wait_sec)
+
+        logging.info("Бот городского новостного канала успешно запущен.")
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":
