@@ -96,7 +96,10 @@ async def publish_news_to_channel(
     caption_text = "\n\n".join(post_parts)
 
     if not media:
-        await bot.send_message(chat_id=channel_id, text=caption_text)
+        await bot.send_message(
+            chat_id=channel_id,
+            text=caption_text or "📰 Новость от подписчика",
+        )
         return
 
     if len(media) == 1:
@@ -108,6 +111,10 @@ async def publish_news_to_channel(
                 await bot.send_video(chat_id=channel_id, video=item["file_id"], caption=caption_text or None)
             elif item["type"] == "document":
                 await bot.send_document(chat_id=channel_id, document=item["file_id"], caption=caption_text or None)
+            else:
+                await send_media_attachments(bot, channel_id, media)
+                if caption_text:
+                    await bot.send_message(chat_id=channel_id, text=caption_text)
         else:
             await send_media_attachments(bot, channel_id, media)
             await bot.send_message(chat_id=channel_id, text=caption_text)
@@ -115,6 +122,7 @@ async def publish_news_to_channel(
 
     pv_items = [m for m in media if m["type"] in ("photo", "video")]
     doc_items = [m for m in media if m["type"] == "document"]
+    other_items = [m for m in media if m["type"] not in ("photo", "video", "document")]
 
     if pv_items:
         media_group = []
@@ -154,10 +162,15 @@ async def publish_news_to_channel(
         else:
             await bot.send_media_group(chat_id=channel_id, media=doc_group)
 
+    if other_items:
+        await send_media_attachments(bot, channel_id, other_items)
+        if not pv_items and not doc_items and caption_text:
+            await bot.send_message(chat_id=channel_id, text=caption_text)
+
 
 async def mark_card_resolved(callback: CallbackQuery, status_line: str) -> None:
     """Обновляет текст карточки и убирает кнопки управления."""
-    if not callback.message:
+    if not isinstance(callback.message, Message):
         return
     base_html = callback.message.html_text or ""
     try:
@@ -173,11 +186,16 @@ async def mark_card_resolved(callback: CallbackQuery, status_line: str) -> None:
 
 @admin_router.callback_query(F.data.startswith("adm:pub:"))
 async def cb_admin_publish_news(
-    callback: CallbackQuery, db: Database, bot: Bot, config: Config
+    callback: CallbackQuery, state: FSMContext, db: Database, bot: Bot, config: Config
 ) -> None:
+    await state.clear()
     ticket_id = int(callback.data.split(":")[2])
     ticket = await db.get_ticket(ticket_id)
-    feedback_chat = callback.message.chat.id if callback.message else config.admin_chat_id
+    feedback_chat = (
+        callback.message.chat.id
+        if isinstance(callback.message, Message)
+        else config.admin_chat_id
+    )
 
     if not ticket:
         await callback.answer("Новость не найдена в базе данных.", show_alert=True)
@@ -238,13 +256,16 @@ async def cb_admin_start_reply(
     await state.set_state(AdminStates.waiting_reply_text)
     await state.update_data(target_ticket_id=ticket_id)
 
-    if callback.message:
+    if isinstance(callback.message, Message):
         prompt_msg = await callback.message.answer(
             f"💬 Введите ответ пользователю по обращению <b>#{ticket_id}</b>\n"
             "(можно отправить текст, фото или файл):",
             reply_markup=admin_cancel_fsm_kb(),
         )
-        await state.update_data(prompt_message_id=prompt_msg.message_id)
+        await state.update_data(
+            prompt_chat_id=prompt_msg.chat.id,
+            prompt_message_id=prompt_msg.message_id,
+        )
     await callback.answer()
 
 
@@ -258,6 +279,9 @@ async def process_admin_reply_text(
 ) -> None:
     data = await state.get_data()
     ticket_id = data.get("target_ticket_id")
+    prompt_chat_id = data.get("prompt_chat_id")
+    prompt_message_id = data.get("prompt_message_id")
+
     if not ticket_id:
         await state.clear()
         return
@@ -277,6 +301,12 @@ async def process_admin_reply_text(
 
     await state.clear()
     await db.update_ticket_status(ticket_id=ticket_id, status="answered")
+
+    if prompt_chat_id and prompt_message_id:
+        try:
+            await bot.delete_message(chat_id=prompt_chat_id, message_id=prompt_message_id)
+        except TelegramBadRequest:
+            pass
 
     safe_reply = html.escape(text) if text else "<i>(администратор отправил вложение)</i>"
     user_notice = (
@@ -305,14 +335,17 @@ async def process_admin_reply_text(
 # --- ОТКЛОНЕНИЕ С ПРИЧИНОЙ ---
 
 @admin_router.callback_query(F.data.startswith("adm:rej_menu:"))
-async def cb_admin_reject_menu(callback: CallbackQuery, db: Database) -> None:
+async def cb_admin_reject_menu(
+    callback: CallbackQuery, state: FSMContext, db: Database
+) -> None:
+    await state.clear()
     ticket_id = int(callback.data.split(":")[2])
     ticket = await db.get_ticket(ticket_id)
     if not ticket:
         await callback.answer("Тикет не найден.", show_alert=True)
         return
 
-    if callback.message:
+    if isinstance(callback.message, Message):
         await callback.message.edit_reply_markup(
             reply_markup=reject_reasons_kb(ticket_id=ticket_id, category=ticket["category"])
         )
@@ -332,19 +365,24 @@ async def cb_admin_back_kb(callback: CallbackQuery, db: Database) -> None:
         if ticket["category"] == "news"
         else admin_ticket_kb(ticket_id, ticket["user_id"])
     )
-    if callback.message:
+    if isinstance(callback.message, Message):
         await callback.message.edit_reply_markup(reply_markup=kb)
     await callback.answer()
 
 
 @admin_router.callback_query(F.data.startswith("adm:rej_fast:"))
 async def cb_admin_reject_fast(
-    callback: CallbackQuery, db: Database, bot: Bot, config: Config
+    callback: CallbackQuery, state: FSMContext, db: Database, bot: Bot, config: Config
 ) -> None:
+    await state.clear()
     parts = callback.data.split(":")
     ticket_id = int(parts[2])
     reason_idx = parts[3]
-    feedback_chat = callback.message.chat.id if callback.message else config.admin_chat_id
+    feedback_chat = (
+        callback.message.chat.id
+        if isinstance(callback.message, Message)
+        else config.admin_chat_id
+    )
 
     ticket = await db.get_ticket(ticket_id)
     if not ticket:
@@ -384,18 +422,23 @@ async def cb_admin_reject_custom(
         await callback.answer("Тикет не найден.", show_alert=True)
         return
 
+    is_msg = isinstance(callback.message, Message)
     await state.set_state(AdminStates.waiting_custom_reject_reason)
     await state.update_data(
         reject_ticket_id=ticket_id,
-        card_chat_id=callback.message.chat.id if callback.message else None,
-        card_message_id=callback.message.message_id if callback.message else None,
-        card_html=callback.message.html_text if callback.message else "",
+        card_chat_id=callback.message.chat.id if is_msg else None,
+        card_message_id=callback.message.message_id if is_msg else None,
+        card_html=callback.message.html_text if is_msg else "",
     )
 
-    if callback.message:
-        await callback.message.answer(
+    if is_msg:
+        prompt_msg = await callback.message.answer(
             f"✍️ Введите причину отказа для обращения <b>#{ticket_id}</b>:",
             reply_markup=admin_cancel_fsm_kb(),
+        )
+        await state.update_data(
+            prompt_chat_id=prompt_msg.chat.id,
+            prompt_message_id=prompt_msg.message_id,
         )
     await callback.answer()
 
@@ -417,6 +460,8 @@ async def process_admin_custom_reject(
     card_chat_id = data.get("card_chat_id") or message.chat.id
     card_message_id = data.get("card_message_id")
     card_html = data.get("card_html", "")
+    prompt_chat_id = data.get("prompt_chat_id")
+    prompt_message_id = data.get("prompt_message_id")
     await state.clear()
 
     if not ticket_id:
@@ -426,6 +471,12 @@ async def process_admin_custom_reject(
     if not ticket:
         await message.answer("⚠️ Тикет не найден.")
         return
+
+    if prompt_chat_id and prompt_message_id:
+        try:
+            await bot.delete_message(chat_id=prompt_chat_id, message_id=prompt_message_id)
+        except TelegramBadRequest:
+            pass
 
     await db.update_ticket_status(ticket_id=ticket_id, status="rejected")
     await safe_notify_user(
@@ -460,11 +511,16 @@ async def process_admin_custom_reject(
 
 @admin_router.callback_query(F.data.startswith("adm:close:"))
 async def cb_admin_close_ticket(
-    callback: CallbackQuery, db: Database, bot: Bot, config: Config
+    callback: CallbackQuery, state: FSMContext, db: Database, bot: Bot, config: Config
 ) -> None:
+    await state.clear()
     ticket_id = int(callback.data.split(":")[2])
     ticket = await db.get_ticket(ticket_id)
-    feedback_chat = callback.message.chat.id if callback.message else config.admin_chat_id
+    feedback_chat = (
+        callback.message.chat.id
+        if isinstance(callback.message, Message)
+        else config.admin_chat_id
+    )
 
     if not ticket:
         await callback.answer("Тикет не найден.", show_alert=True)
@@ -485,14 +541,16 @@ async def cb_admin_close_ticket(
 
 @admin_router.callback_query(F.data.startswith("adm:ban:"))
 async def cb_admin_ban_user(
-    callback: CallbackQuery, db: Database, config: Config
+    callback: CallbackQuery, state: FSMContext, db: Database, config: Config
 ) -> None:
+    await state.clear()
     parts = callback.data.split(":")
     target_user_id = int(parts[2])
     ticket_id = int(parts[3])
 
     is_demo_sandbox = (
-        callback.message is not None and callback.message.chat.id != config.admin_chat_id
+        isinstance(callback.message, Message)
+        and callback.message.chat.id != config.admin_chat_id
     ) or (callback.from_user is not None and target_user_id == callback.from_user.id)
 
     await db.update_ticket_status(ticket_id=ticket_id, status="rejected")
@@ -520,7 +578,7 @@ async def cb_admin_ban_user(
 @admin_router.callback_query(F.data == "adm:cancel_fsm")
 async def cb_admin_cancel_fsm(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    if callback.message:
+    if isinstance(callback.message, Message):
         try:
             await callback.message.delete()
         except TelegramBadRequest:

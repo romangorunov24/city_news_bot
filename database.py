@@ -14,8 +14,15 @@ class Database:
         if parent:
             os.makedirs(parent, exist_ok=True)
 
+    async def _connect(self) -> aiosqlite.Connection:
+        db = await aiosqlite.connect(self.db_path)
+        await db.execute("PRAGMA journal_mode=WAL;")
+        await db.execute("PRAGMA busy_timeout=5000;")
+        return db
+
     async def init_db(self) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        db = await self._connect()
+        try:
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
@@ -28,7 +35,6 @@ class Database:
                 )
                 """
             )
-            # Мягкая миграция на случай, если база уже была создана без колонки demo_mode
             try:
                 await db.execute(
                     "ALTER TABLE users ADD COLUMN demo_mode INTEGER NOT NULL DEFAULT 1"
@@ -52,10 +58,13 @@ class Database:
                 """
             )
             await db.commit()
+        finally:
+            await db.close()
 
     async def upsert_user(self, user_id: int, username: str | None, full_name: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        async with aiosqlite.connect(self.db_path) as db:
+        db = await self._connect()
+        try:
             await db.execute(
                 """
                 INSERT INTO users (user_id, username, full_name, is_banned, demo_mode, created_at)
@@ -67,46 +76,63 @@ class Database:
                 (user_id, username, full_name, now),
             )
             await db.commit()
+        finally:
+            await db.close()
 
     async def get_demo_mode(self, user_id: int) -> bool:
-        async with aiosqlite.connect(self.db_path) as db:
+        db = await self._connect()
+        try:
             async with db.execute(
                 "SELECT demo_mode FROM users WHERE user_id = ?", (user_id,)
             ) as cursor:
                 row = await cursor.fetchone()
                 return bool(row[0]) if row else True
+        finally:
+            await db.close()
 
     async def set_demo_mode(self, user_id: int, enabled: bool) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        db = await self._connect()
+        try:
             await db.execute(
                 "UPDATE users SET demo_mode = ? WHERE user_id = ?",
                 (int(enabled), user_id),
             )
             await db.commit()
+        finally:
+            await db.close()
 
     async def is_user_banned(self, user_id: int) -> bool:
-        async with aiosqlite.connect(self.db_path) as db:
+        db = await self._connect()
+        try:
             async with db.execute(
                 "SELECT is_banned FROM users WHERE user_id = ?", (user_id,)
             ) as cursor:
                 row = await cursor.fetchone()
                 return bool(row[0]) if row else False
+        finally:
+            await db.close()
 
     async def ban_user(self, user_id: int) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        db = await self._connect()
+        try:
             await db.execute(
                 "UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,)
             )
             await db.commit()
+        finally:
+            await db.close()
 
     async def get_user(self, user_id: int) -> dict[str, Any] | None:
-        async with aiosqlite.connect(self.db_path) as db:
+        db = await self._connect()
+        try:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 "SELECT * FROM users WHERE user_id = ?", (user_id,)
             ) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
+        finally:
+            await db.close()
 
     async def create_ticket(
         self,
@@ -118,7 +144,8 @@ class Database:
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         media_json = json.dumps(media or [], ensure_ascii=False)
-        async with aiosqlite.connect(self.db_path) as db:
+        db = await self._connect()
+        try:
             cursor = await db.execute(
                 """
                 INSERT INTO tickets (user_id, category, status, is_anonymous, text, media_json, created_at)
@@ -127,10 +154,15 @@ class Database:
                 (user_id, category, int(is_anonymous), text, media_json, now),
             )
             await db.commit()
+            if cursor.lastrowid is None:
+                raise RuntimeError("Не удалось получить ID созданного тикета")
             return int(cursor.lastrowid)
+        finally:
+            await db.close()
 
     async def get_ticket(self, ticket_id: int) -> dict[str, Any] | None:
-        async with aiosqlite.connect(self.db_path) as db:
+        db = await self._connect()
+        try:
             db.row_factory = aiosqlite.Row
             async with db.execute(
                 """
@@ -147,11 +179,16 @@ class Database:
                 data = dict(row)
                 data["media"] = json.loads(data.get("media_json") or "[]")
                 return data
+        finally:
+            await db.close()
 
     async def update_ticket_status(self, ticket_id: int, status: str) -> None:
-        async with aiosqlite.connect(self.db_path) as db:
+        db = await self._connect()
+        try:
             await db.execute(
                 "UPDATE tickets SET status = ? WHERE id = ?",
                 (status, ticket_id),
             )
             await db.commit()
+        finally:
+            await db.close()

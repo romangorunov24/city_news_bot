@@ -13,7 +13,7 @@ class AlbumMiddleware(BaseMiddleware):
     и пропускает в хендлер только один вызов вместо N отдельных сообщений.
     """
 
-    def __init__(self, latency: float = 0.6) -> None:
+    def __init__(self, latency: float = 0.7) -> None:
         self.latency = latency
         self.album_data: dict[str, list[Message]] = {}
 
@@ -57,7 +57,6 @@ class BanCheckMiddleware(BaseMiddleware):
         user = data.get("event_from_user")
         chat = data.get("event_chat")
 
-        # Не блокируем действия внутри админ-чата
         if chat and chat.id == self.admin_chat_id:
             return await handler(event, data)
 

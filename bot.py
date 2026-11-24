@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramRetryAfter
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.storage.memory import MemoryStorage
 from config import load_config
 from database import Database
@@ -30,34 +30,29 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Передаём зависимости во все хендлеры через workflow_data
     dp["db"] = db
     dp["config"] = config
 
-    # Регистрируем middleware (сначала проверка бана, затем склейка альбомов)
     dp.update.outer_middleware(BanCheckMiddleware(db=db, admin_chat_id=config.admin_chat_id))
-    dp.message.middleware(AlbumMiddleware(latency=0.6))
+    dp.message.middleware(AlbumMiddleware(latency=0.7))
 
-    # Подключаем роутеры (админ-роутер первым для приоритета состояний в админ-чате)
     dp.include_router(admin_router)
     dp.include_router(user_router)
 
     try:
-        # Безопасный сброс вебхука без падения контейнера при флуд-контроле Telegram
-        while True:
+        # Проверяем, установлен ли вебхук; если нет — не вызываем delete_webhook, чтобы не ловить Flood Control
+        webhook_info = await bot.get_webhook_info()
+        if webhook_info.url:
             try:
                 await bot.delete_webhook(drop_pending_updates=True)
-                break
-            except TelegramRetryAfter as e:
-                wait_sec = int(e.retry_after) + 1
-                logging.warning(
-                    "Telegram Flood Control на delete_webhook. Ждём %s сек. без перезапуска...",
-                    wait_sec,
-                )
-                await asyncio.sleep(wait_sec)
+            except TelegramAPIError as e:
+                logging.warning("Не удалось удалить вебхук (%s), запускаем polling напрямую.", e)
 
-        logging.info("Бот городского новостного канала успешно запущен.")
-        await dp.start_polling(bot)
+        logging.info("Бот городского новостного канала успешно запущен (БД: %s).", config.db_path)
+        await dp.start_polling(
+            bot,
+            allowed_updates=dp.resolve_used_update_types(),
+        )
     finally:
         await bot.session.close()
 

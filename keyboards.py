@@ -3,7 +3,6 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-# Шаблоны быстрых причин отказа по категориям
 NEWS_REJECT_REASONS: dict[str, str] = {
     "0": "Уже публиковали эту новость",
     "1": "Не по теме города",

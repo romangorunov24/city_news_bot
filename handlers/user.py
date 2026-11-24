@@ -1,13 +1,15 @@
 # handlers/user.py — пользовательские сценарии: предложка новостей (с альбомами), вопросы/жалобы, реклама, тикеты и демо-песочница
 
 import html
+import logging
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest
 from aiogram.filters import CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
+    InputMediaAudio,
     InputMediaDocument,
     InputMediaPhoto,
     InputMediaVideo,
@@ -24,6 +26,7 @@ from keyboards import (
     main_menu_kb,
 )
 
+logger = logging.getLogger(__name__)
 user_router = Router()
 
 
@@ -82,6 +85,10 @@ def extract_payload(messages: list[Message]) -> tuple[str, list[dict[str, str]]]
             media.append({"type": "video", "file_id": msg.video.file_id})
         elif msg.document:
             media.append({"type": "document", "file_id": msg.document.file_id})
+        elif msg.audio:
+            media.append({"type": "audio", "file_id": msg.audio.file_id})
+        elif msg.voice:
+            media.append({"type": "voice", "file_id": msg.voice.file_id})
 
     return text, media
 
@@ -95,23 +102,38 @@ async def send_media_attachments(
 
     if len(media) == 1:
         item = media[0]
-        if item["type"] == "photo":
-            await bot.send_photo(chat_id=chat_id, photo=item["file_id"])
-        elif item["type"] == "video":
-            await bot.send_video(chat_id=chat_id, video=item["file_id"])
-        elif item["type"] == "document":
-            await bot.send_document(chat_id=chat_id, document=item["file_id"])
+        mtype = item["type"]
+        fid = item["file_id"]
+        if mtype == "photo":
+            await bot.send_photo(chat_id=chat_id, photo=fid)
+        elif mtype == "video":
+            await bot.send_video(chat_id=chat_id, video=fid)
+        elif mtype == "document":
+            await bot.send_document(chat_id=chat_id, document=fid)
+        elif mtype == "audio":
+            await bot.send_audio(chat_id=chat_id, audio=fid)
+        elif mtype == "voice":
+            await bot.send_voice(chat_id=chat_id, voice=fid)
         return
 
     pv_group = []
     doc_group = []
+    audio_group = []
+    other_items = []
+
     for item in media:
-        if item["type"] == "photo":
-            pv_group.append(InputMediaPhoto(media=item["file_id"]))
-        elif item["type"] == "video":
-            pv_group.append(InputMediaVideo(media=item["file_id"]))
-        elif item["type"] == "document":
-            doc_group.append(InputMediaDocument(media=item["file_id"]))
+        mtype = item["type"]
+        fid = item["file_id"]
+        if mtype == "photo":
+            pv_group.append(InputMediaPhoto(media=fid))
+        elif mtype == "video":
+            pv_group.append(InputMediaVideo(media=fid))
+        elif mtype == "document":
+            doc_group.append(InputMediaDocument(media=fid))
+        elif mtype == "audio":
+            audio_group.append(InputMediaAudio(media=fid))
+        else:
+            other_items.append(item)
 
     if len(pv_group) == 1:
         single = pv_group[0]
@@ -126,6 +148,15 @@ async def send_media_attachments(
         await bot.send_document(chat_id=chat_id, document=doc_group[0].media)
     elif len(doc_group) > 1:
         await bot.send_media_group(chat_id=chat_id, media=doc_group)
+
+    if len(audio_group) == 1:
+        await bot.send_audio(chat_id=chat_id, audio=audio_group[0].media)
+    elif len(audio_group) > 1:
+        await bot.send_media_group(chat_id=chat_id, media=audio_group)
+
+    for item in other_items:
+        if item["type"] == "voice":
+            await bot.send_voice(chat_id=chat_id, voice=item["file_id"])
 
 
 async def dispatch_ticket_to_admin(
@@ -169,7 +200,6 @@ async def dispatch_ticket_to_admin(
     is_demo = await db.get_demo_mode(user_id)
 
     try:
-        # Если тестирует потенциальный заказчик с включённым демо-режимом — показываем админ-карточку прямо ему
         if is_demo and user_id != config.admin_chat_id:
             await bot.send_message(
                 chat_id=user_id,
@@ -182,15 +212,17 @@ async def dispatch_ticket_to_admin(
                 text=card,
                 reply_markup=kb,
             )
-            # А владельцу бота отправляем короткое уведомление о тесте
-            await bot.send_message(
-                chat_id=config.admin_chat_id,
-                text=(
-                    f"🔔 <b>Новый тест в демо-боте!</b>\n"
-                    f"👤 {safe_name} ({user_tag}) | ID: <code>{user_id}</code>\n"
-                    f"📂 Категория: <b>{category}</b> (тикет #{ticket_id})"
-                ),
-            )
+            try:
+                await bot.send_message(
+                    chat_id=config.admin_chat_id,
+                    text=(
+                        f"🔔 <b>Новый тест в демо-боте!</b>\n"
+                        f"👤 {safe_name} ({user_tag}) | ID: <code>{user_id}</code>\n"
+                        f"📂 Категория: <b>{category}</b> (тикет #{ticket_id})"
+                    ),
+                )
+            except TelegramAPIError as admin_err:
+                logger.warning("Не удалось отправить лид-уведомление в ADMIN_CHAT_ID: %s", admin_err)
         else:
             if media:
                 await send_media_attachments(bot, config.admin_chat_id, media)
@@ -200,7 +232,7 @@ async def dispatch_ticket_to_admin(
                 reply_markup=kb,
             )
     except TelegramAPIError as e:
-        print(f"[ERROR] Не удалось отправить карточку #{ticket_id}: {e}")
+        logger.error("Не удалось отправить карточку #%s: %s", ticket_id, e)
 
 
 @user_router.message(CommandStart())
@@ -229,11 +261,14 @@ async def cb_toggle_demo(callback: CallbackQuery, db: Database) -> None:
     new_state = not current
     await db.set_demo_mode(callback.from_user.id, new_state)
 
-    if callback.message:
-        await callback.message.edit_text(
-            build_welcome_text(new_state),
-            reply_markup=main_menu_kb(new_state),
-        )
+    if isinstance(callback.message, Message):
+        try:
+            await callback.message.edit_text(
+                build_welcome_text(new_state),
+                reply_markup=main_menu_kb(new_state),
+            )
+        except TelegramBadRequest:
+            pass
 
     alert_text = (
         "Режим админа ВКЛ: карточки модерации с кнопками будут приходить прямо вам для теста."
@@ -249,10 +284,15 @@ async def cb_back_main(callback: CallbackQuery, state: FSMContext, db: Database)
     demo_mode = (
         await db.get_demo_mode(callback.from_user.id) if callback.from_user else True
     )
-    if callback.message:
-        await callback.message.edit_text(
-            build_welcome_text(demo_mode), reply_markup=main_menu_kb(demo_mode)
-        )
+    if isinstance(callback.message, Message):
+        try:
+            await callback.message.edit_text(
+                build_welcome_text(demo_mode), reply_markup=main_menu_kb(demo_mode)
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                build_welcome_text(demo_mode), reply_markup=main_menu_kb(demo_mode)
+            )
     await callback.answer()
 
 
@@ -262,11 +302,17 @@ async def cb_cancel(callback: CallbackQuery, state: FSMContext, db: Database) ->
     demo_mode = (
         await db.get_demo_mode(callback.from_user.id) if callback.from_user else True
     )
-    if callback.message:
-        await callback.message.edit_text(
-            "❌ Действие отменено.\n\n" + build_welcome_text(demo_mode),
-            reply_markup=main_menu_kb(demo_mode),
-        )
+    if isinstance(callback.message, Message):
+        try:
+            await callback.message.edit_text(
+                "❌ Действие отменено.\n\n" + build_welcome_text(demo_mode),
+                reply_markup=main_menu_kb(demo_mode),
+            )
+        except TelegramBadRequest:
+            await callback.message.answer(
+                "❌ Действие отменено.\n\n" + build_welcome_text(demo_mode),
+                reply_markup=main_menu_kb(demo_mode),
+            )
     await callback.answer("Отменено")
 
 
@@ -275,7 +321,7 @@ async def cb_cancel(callback: CallbackQuery, state: FSMContext, db: Database) ->
 @user_router.callback_query(F.data == "menu:news")
 async def cb_menu_news(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(UserStates.waiting_news_content)
-    if callback.message:
+    if isinstance(callback.message, Message):
         await callback.message.edit_text(
             "📰 <b>Предложить новость</b>\n\n"
             "Отправьте текст новости, фото или видео (можно сразу альбомом из нескольких файлов).\n"
@@ -317,6 +363,14 @@ async def process_news_content(
     )
 
 
+@user_router.message(UserStates.waiting_news_anon)
+async def process_news_anon_text_fallback(message: Message) -> None:
+    await message.answer(
+        "👆 Пожалуйста, выберите способ публикации кнопкой выше (<b>Анонимно</b> или <b>Указать меня</b>) либо нажмите <b>Отмена</b>.",
+        reply_markup=anonymity_kb(),
+    )
+
+
 @user_router.callback_query(UserStates.waiting_news_anon, F.data.startswith("anon:"))
 async def process_news_anon(
     callback: CallbackQuery,
@@ -348,7 +402,7 @@ async def process_news_anon(
     demo_mode = await db.get_demo_mode(callback.from_user.id)
 
     await state.clear()
-    if callback.message:
+    if isinstance(callback.message, Message):
         await callback.message.edit_text(
             f"✅ <b>Новость #{ticket_id} отправлена редакции на проверку!</b>\n\n"
             "Мы уведомим вас, как только она будет опубликована или если потребуются уточнения.",
@@ -376,7 +430,7 @@ async def process_news_anon(
 @user_router.callback_query(F.data == "menu:support")
 async def cb_menu_support(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(UserStates.waiting_support_content)
-    if callback.message:
+    if isinstance(callback.message, Message):
         await callback.message.edit_text(
             "💬 <b>Задать вопрос / Жалоба</b>\n\n"
             "Опишите ваш вопрос или проблему одним сообщением. "
@@ -449,7 +503,7 @@ async def process_support_content(
 @user_router.callback_query(F.data == "menu:ads")
 async def cb_menu_ads(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    if callback.message:
+    if isinstance(callback.message, Message):
         await callback.message.edit_text(ADS_PRICE_TEXT, reply_markup=ads_menu_kb())
     await callback.answer()
 
@@ -457,7 +511,7 @@ async def cb_menu_ads(callback: CallbackQuery, state: FSMContext) -> None:
 @user_router.callback_query(F.data == "ads:apply")
 async def cb_ads_apply(callback: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(UserStates.waiting_ads_content)
-    if callback.message:
+    if isinstance(callback.message, Message):
         await callback.message.edit_text(
             "📝 <b>Заявка на рекламу</b>\n\n"
             "Напишите одним сообщением:\n"
@@ -548,7 +602,7 @@ async def cb_user_reply_ticket(
 
     await state.set_state(UserStates.waiting_ticket_reply)
     await state.update_data(reply_ticket_id=ticket_id)
-    if callback.message:
+    if isinstance(callback.message, Message):
         await callback.message.answer(
             f"✍️ Введите ваш ответ по обращению <b>#{ticket_id}</b> (можно прикрепить фото или файл):",
             reply_markup=cancel_kb(),
@@ -632,4 +686,23 @@ async def process_user_ticket_reply(
             reply_markup=kb,
         )
     except TelegramAPIError as e:
-        print(f"[ERROR] Не удалось переслать ответ по тикету #{ticket_id}: {e}")
+        logger.error("Не удалось переслать ответ по тикету #%s: %s", ticket_id, e)
+
+
+# --- 5. ЗАПАСНОЙ ОБРАБОТЧИК ЛЮБЫХ СООБЩЕНИЙ В ЛИЧКЕ БЕЗ СОСТОЯНИЯ ---
+
+@user_router.message(F.chat.type == "private")
+async def fallback_private_message(message: Message, db: Database) -> None:
+    demo_mode = True
+    if message.from_user:
+        await db.upsert_user(
+            user_id=message.from_user.id,
+            username=message.from_user.username,
+            full_name=message.from_user.full_name,
+        )
+        demo_mode = await db.get_demo_mode(message.from_user.id)
+
+    await message.answer(
+        "👇 Выберите нужное действие в меню ниже:",
+        reply_markup=main_menu_kb(demo_mode),
+    )
