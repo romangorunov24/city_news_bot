@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import socket
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
@@ -16,6 +17,16 @@ from database import Database
 from handlers.admin import admin_router
 from handlers.user import user_router
 from middlewares.album import AlbumMiddleware, BanCheckMiddleware
+
+# Принудительно используем IPv4, чтобы избежать 30-секундных таймаутов IPv6 в контейнерах Railway
+_orig_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+
+socket.getaddrinfo = _ipv4_getaddrinfo
 
 
 async def main() -> None:
@@ -64,7 +75,8 @@ async def main() -> None:
             except TelegramRetryAfter as e:
                 wait_sec = int(e.retry_after) + 5
                 logging.warning(
-                    "⏳ Telegram Flood Control при старте. Ждём %s сек. до полного снятия ограничения...",
+                    "⏳ Telegram Flood Control (%s). Ждём %s сек. до полного снятия ограничения...",
+                    e.message,
                     wait_sec,
                 )
                 await asyncio.sleep(wait_sec)
