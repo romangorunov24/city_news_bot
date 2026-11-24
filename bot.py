@@ -5,7 +5,11 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramConflictError, TelegramRetryAfter
+from aiogram.exceptions import (
+    TelegramConflictError,
+    TelegramRetryAfter,
+    TelegramUnauthorizedError,
+)
 from aiogram.fsm.storage.memory import MemoryStorage
 from config import load_config
 from database import Database
@@ -48,25 +52,31 @@ async def main() -> None:
                 )
                 await dp.start_polling(
                     bot,
+                    close_bot_session=False,
                     allowed_updates=dp.resolve_used_update_types(),
                 )
                 break
+            except TelegramUnauthorizedError:
+                logging.error(
+                    "❌ Неверный BOT_TOKEN! Проверьте переменную BOT_TOKEN в настройках Railway."
+                )
+                await asyncio.sleep(60)
             except TelegramRetryAfter as e:
-                wait_sec = int(e.retry_after) + 1
+                wait_sec = int(e.retry_after) + 5
                 logging.warning(
-                    "Telegram Flood Control при старте. Ждём %s сек. без перезапуска...",
+                    "⏳ Telegram Flood Control при старте. Ждём %s сек. до полного снятия ограничения...",
                     wait_sec,
                 )
                 await asyncio.sleep(wait_sec)
             except TelegramConflictError:
                 logging.warning(
-                    "Обнаружен активный webhook или второй экземпляр бота. Сбрасываем webhook..."
+                    "⚠️ Обнаружен активный webhook или дубликат процесса. Очищаем webhook и ждём 5 сек..."
                 )
                 try:
                     await bot.delete_webhook(drop_pending_updates=True)
                 except TelegramRetryAfter as e:
-                    await asyncio.sleep(int(e.retry_after) + 1)
-                await asyncio.sleep(2)
+                    await asyncio.sleep(int(e.retry_after) + 5)
+                await asyncio.sleep(5)
     finally:
         await bot.session.close()
 
